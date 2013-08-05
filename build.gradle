@@ -1,0 +1,187 @@
+import org.gradle.api.internal.artifacts.publish.DefaultPublishArtifact
+import java.io.File;
+
+apply plugin: 'java'
+apply plugin: 'eclipse'
+apply plugin: 'maven'
+apply plugin: 'signing'
+apply plugin: 'project-report'
+
+// Gradle release plugin (see https://github.com/townsfolk/gradle-release )
+apply plugin: 'release'
+
+// Artifact settings
+group = 'org.zeroturnaround'
+
+buildscript {
+    repositories {
+       mavenCentral()
+       // for Gradle Release plugin
+       maven { url "https://oss.sonatype.org/content/groups/public"}
+    }
+    dependencies {
+       // Gradle Release plugin
+       classpath 'com.github.townsfolk:gradle-release:1.2'
+    }
+ }
+
+configurations {
+  deployerJars
+  published.extendsFrom archives, signatures
+}
+
+repositories {
+  mavenCentral()
+}
+  
+dependencies {
+  compile 'commons-lang:commons-lang:2.6'
+  
+  deployerJars 'org.apache.maven.wagon:wagon-webdav-jackrabbit:2.0'
+}
+
+  
+sourceSets {
+  main {
+    java {
+      // no customizations at the moment..
+    }
+  }
+}
+
+/**
+ * Executes the main class via gradle
+ */
+task runSimple(type: JavaExec, dependsOn: classes) {
+  main = 'org.zeroturnaround.demoapps.swing.Main'
+  classpath = sourceSets.main.runtimeClasspath  
+}
+
+// run: "gradle clean runSimple"
+
+
+// =========================== PUBLISHING ===========================
+
+// Contents of pom.xml that will be created for publishing to the maven-style artifact repository
+def pomFile = pom {
+  project {
+    name 'Gradle release plugin testout'
+    description 'Gradle release plugin testout'
+    //url 'http://www.zeroturnaround.com/jrebel'
+    licenses {
+      license {
+        name 'The Apache Software License, Version 2.0'
+        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+        distribution 'repo'
+      }
+    }
+    scm {
+      url 'https://github.com/sander24/gradle-release-plugin-test-project'
+      connection 'scm:git:git@github.com:sander24/gradle-release-plugin-test-project.git'
+      developerConnection 'scm:git:git@github.com:sander24/gradle-release-plugin-test-project.git'
+    }
+  }
+}
+
+
+uploadPublished {
+  repositories {
+    mavenDeployer {
+      configuration = configurations.deployerJars
+
+      repository(url: 'http://repos.zeroturnaround.com/nexus/content/repositories/zt-public-releases/') {
+        authentication(userName: nexusReleasesUsername, password: nexusReleasesPassword)
+      }
+
+      snapshotRepository(url: 'http://repos.zeroturnaround.com/nexus/content/repositories/zt-public-snapshots/') {
+        authentication(userName: nexusSnapshotsUsername, password: nexusSnapshotsPassword)
+      }
+
+      pom = pomFile
+    }
+  }
+}
+
+signing {
+  sign configurations.archives
+}
+
+/**
+ * Custom release task
+ * XXX -- was 'release'
+ */
+task release2( dependsOn: uploadPublished ) {
+  description = 'Releases the plugin, sign artifacts and upload them to Nexus. The bundle with artifacts for Sonatype is included into release.'
+}
+
+// Prepare bundle for Sonatype
+
+task sourcesJar(type: Jar, dependsOn: classes) {
+  classifier = 'sources'
+  from sourceSets.main.allSource
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+  classifier = 'javadoc'
+  from javadoc.destinationDir
+}
+
+class GeneratePomTask extends DefaultTask {
+  File destFile
+}
+
+task generatePom(type: GeneratePomTask) {
+  destFile = file("${buildDir}/generatedPoms/${project.name}-${project.version}.pom")
+
+  inputs.file project.buildFile
+  outputs.file destFile
+
+  doLast {
+    println "Generate POM into " + destFile
+
+    // Write the pom-file onto disk
+    pomFile.writeTo(destFile)
+  }
+}
+
+task bundle( type: Zip, dependsOn: signArchives) {
+  description = 'Prepares the bundle with artifacts for Sonatype.'
+  classifier = 'bundle'
+
+  from('build/libs/') {
+    include 'gradle-release-plugin-testout-*.jar'
+    include 'gradle-release-plugin-testout-*.jar.asc'
+  }
+
+  from('build/generatedPoms/') {
+    include '*.pom'
+    include '*.pom.asc'
+  }
+
+  doFirst {
+    bundleFile = file("${buildDir}/distributions/${project.name}-${project.version}-bundle.zip")
+
+    println "Creating bundle ${bundleFile}"
+
+    configurations.add "publishBundle"
+    configurations.publishBundle.artifacts.add(
+        new DefaultPublishArtifact("bundle", "zip", "zip", "bundle", new Date(), bundleFile)
+    )
+  }
+}
+
+uploadPublished.dependsOn bundle
+
+// Define list of artifacts
+
+artifacts {
+  archives (generatePom.destFile) {
+    name 'pom'
+    type 'pom'
+    builtBy generatePom
+  }
+  archives jar
+  archives sourcesJar
+  archives javadocJar
+}
+
